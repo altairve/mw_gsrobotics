@@ -22,6 +22,7 @@ def UpdateView(
     cmap: np.ndarray,
     config: ConfigModel,
     window_title: str,
+    depth_threshold: float = 0.1,  # <-- tune this value (in depth units)
 ):
 
     # Compute depth map and gradients.
@@ -36,7 +37,13 @@ def UpdateView(
     if np.isnan(depth_map).any():
         return
 
-    depth_map_trimmed = trim_outliers(depth_map, 1, 99)
+    # --- Threshold depth map: zero out anything below the threshold ---
+    depth_map_thresholded = np.where(depth_map >= depth_threshold, depth_map, 0.0)
+
+    # Build a binary contact mask from the threshold for visualization
+    threshold_binary_mask = (depth_map_thresholded > 0).astype(np.uint8) * 255
+
+    depth_map_trimmed = trim_outliers(depth_map_thresholded, 1, 99)
     depth_map_normalized = normalize_array(array=depth_map_trimmed, min_divider=10)
     depth_rgb = apply_cmap(data=depth_map_normalized, cmap=cmap)
 
@@ -45,15 +52,18 @@ def UpdateView(
 
     # Convert grayscale images to 3-channel for stacking.
     contact_mask_rgb = cv2.cvtColor(contact_mask, cv2.COLOR_GRAY2BGR)
+    threshold_mask_rgb = cv2.cvtColor(threshold_binary_mask, cv2.COLOR_GRAY2BGR)
 
     # Apply labels above images
     frame_labeled = stack_label_above_image(
         image, f"Camera Feed {int(cam_stream.fps)} FPS", 30
     )
-
-    depth_labeled = stack_label_above_image(depth_rgb, "Depth", 30)
+    depth_labeled = stack_label_above_image(depth_rgb, "Depth (Thresholded)", 30)
     contact_mask_labeled = stack_label_above_image(contact_mask_rgb, "Contact Mask", 30)
-    # Increase spacing between images by adding black spacers
+    threshold_mask_labeled = stack_label_above_image(
+        threshold_mask_rgb, f"Depth Mask (thresh={depth_threshold:.4f})", 30
+    )
+
     spacing_size = 30
     horizontal_spacer = np.zeros(
         (frame_labeled.shape[0], spacing_size, 3), dtype=np.uint8
@@ -66,12 +76,12 @@ def UpdateView(
             contact_mask_labeled,
             horizontal_spacer,
             depth_labeled,
+            horizontal_spacer,
+            threshold_mask_labeled,  # <-- new panel showing binary threshold mask
         )
     )
 
     display_frame = top_row
-
-    # Scale the display frame
     display_frame = cv2.resize(
         display_frame,
         (
@@ -81,31 +91,27 @@ def UpdateView(
         interpolation=cv2.INTER_NEAREST,
     )
     display_frame = display_frame.astype(np.uint8)
-
-    # Show the combined image.
     cv2.imshow(window_title, display_frame)
 
 
-def View3D(config: ConfigModel):
-    WINDOW_TITLE = "Multi-View (Camera, Contact, Depth)"
+def View3D(config: ConfigModel, depth_threshold: float = 0.002):
+    WINDOW_TITLE = "Multi-View (Camera, Contact, Depth, Threshold Mask)"
 
     reconstruction = Reconstruction3D(
         image_width=config.camera_width,
         image_height=config.camera_height,
-        use_gpu=config.use_gpu,  # Change to True if you want to use CUDA.
+        use_gpu=config.use_gpu,
     )
 
-    # Load the trained network using the existing method in reconstruction.py.
     if reconstruction.load_nn(config.nn_model_path) is None:
         log_message("Failed to load model. Exiting.")
         return
 
     if config.pointcloud_enabled:
-        # Initialize the 3D Visualizer.
         visualizer3D = Visualize3D(
             pointcloud_size_x=config.camera_width,
             pointcloud_size_y=config.camera_height,
-            save_path="",  # Provide a path if you want to save point clouds.
+            save_path="",
             window_width=int(config.pointcloud_window_scale * config.camera_width),
             window_height=int(config.pointcloud_window_scale * config.camera_height),
         )
@@ -116,26 +122,32 @@ def View3D(config: ConfigModel):
         path=config.cmap_txt_path, is_bgr=config.cmap_in_BGR_format
     )
 
-    # Initialize the camera stream.
     cam_stream = GelSightMini(
         target_width=config.camera_width, target_height=config.camera_height
     )
     devices = cam_stream.get_device_list()
     log_message(f"Available camera devices: {devices}")
-    # For testing, select device index 0 (adjust if needed).
     cam_stream.select_device(config.default_camera_index)
     cam_stream.start()
 
-    # Main loop: capture frames, compute depth map, and update the 3D view.
     try:
         while True:
-            # Get a new frame from the camera.
             frame = cam_stream.update(dt=0)
             if frame is None:
                 continue
 
-            # Convert color
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            # Live threshold adjustment: press +/- to increase/decrease
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("+") or key == ord("="):
+                depth_threshold = round(depth_threshold + 0.001, 4)
+                log_message(f"Depth threshold increased to {depth_threshold:.4f}")
+            elif key == ord("-"):
+                depth_threshold = max(0.0, round(depth_threshold - 0.001, 4))
+                log_message(f"Depth threshold decreased to {depth_threshold:.4f}")
+            elif key == ord("q"):
+                break
 
             UpdateView(
                 image=frame,
@@ -145,17 +157,10 @@ def View3D(config: ConfigModel):
                 cmap=cmap,
                 config=config,
                 window_title=WINDOW_TITLE,
+                depth_threshold=depth_threshold,
             )
 
-            # Exit conditions.
-            # When press 'q' on keyboard
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
-
-            # Check if the window has been closed by the user.
-            # cv2.getWindowProperty returns a value < 1 when the window is closed.
             if cv2.getWindowProperty(WINDOW_TITLE, cv2.WND_PROP_VISIBLE) < 1:
-                # workaround to better catch widnow exit request
                 for _ in range(5):
                     cv2.waitKey(1)
                 break
@@ -163,7 +168,6 @@ def View3D(config: ConfigModel):
     except KeyboardInterrupt:
         log_message("Exiting...")
     finally:
-        # Release the camera and close windows.
         if cam_stream.camera is not None:
             cam_stream.camera.release()
         cv2.destroyAllWindows()
@@ -182,7 +186,13 @@ if __name__ == "__main__":
         "--gs-config",
         type=str,
         default=None,
-        help="Path to the JSON configuration file. If not provided, default config is used.",
+        help="Path to the JSON configuration file.",
+    )
+    parser.add_argument(
+        "--depth-threshold",
+        type=float,
+        default=0.002,
+        help="Depth threshold below which values are zeroed out (default: 0.002).",
     )
 
     args = parser.parse_args()
@@ -190,14 +200,8 @@ if __name__ == "__main__":
     if args.gs_config is not None:
         log_message(f"Provided config path: {args.gs_config}")
     else:
-        log_message(f"Didn't provide custom config path.")
-        log_message(
-            f"Using default config path './default_config.json' if such file exists."
-        )
-        log_message(
-            f"Using default_config variable from 'config.py' if './default_config.json' is not available"
-        )
+        log_message("Using default config.")
         args.gs_config = "default_config.json"
 
     gs_config = GSConfig(args.gs_config)
-    View3D(config=gs_config.config)
+    View3D(config=gs_config.config, depth_threshold=args.depth_threshold)

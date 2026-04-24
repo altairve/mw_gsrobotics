@@ -1,7 +1,7 @@
 {
     "default_camera_index": 1,
-    "camera_width": 320,
-    "camera_height": 240,
+    "camera_width":  3280,
+    "camera_height": 2464,
     "second_camera_width": 640,
     "second_camera_height": 480,
     "border_fraction": 0.15,
@@ -13,5 +13,5 @@
     "nn_model_path": "./models/nnmini.pt",
     "cmap_txt_path": "./cmap.txt",
     "cmap_in_BGR_format": true,
-    "use_gpu": false
+    "use_gpu": true
 }

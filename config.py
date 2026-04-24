@@ -24,7 +24,7 @@ class ConfigModel(BaseModel):
 
 
 default_config = ConfigModel(
-    default_camera_index=0,
+    default_camera_index=2,
     camera_width=320,
     camera_height=240,
     second_camera_width=320,
