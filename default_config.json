@@ -1,7 +1,7 @@
 {
     "default_camera_index": 1,
-    "camera_width":  3280,
-    "camera_height": 2464,
+    "camera_width": 320,
+    "camera_height": 240,
     "second_camera_width": 640,
     "second_camera_height": 480,
     "border_fraction": 0.15,
