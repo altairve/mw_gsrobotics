@@ -18,6 +18,7 @@ from utilities.gelsightmini import GelSightMini
 class GelSightHolePatternNode(Node):
     def __init__(self):
         super().__init__("gelsight_hole_pattern_node")
+        self.declare_parameter("min_x_span_ratio", 0.6)
 
         self.declare_parameter("gs_config_path", "default_config.json")
         self.declare_parameter("camera_index", 1)
@@ -49,6 +50,7 @@ class GelSightHolePatternNode(Node):
         self.min_blob_area = self.get_parameter("min_blob_area").value
         self.max_blob_area = self.get_parameter("max_blob_area").value
         self.min_contact_area = self.get_parameter("min_contact_area").value
+        self.min_x_span_ratio = self.get_parameter("min_x_span_ratio").value
 
         self.marker_threshold = int(self.get_parameter("marker_threshold").value)
         self.marker_min_area = self.get_parameter("marker_min_area").value
@@ -188,13 +190,25 @@ class GelSightHolePatternNode(Node):
             )
             return debug_bgr, None
 
+        frame_width = threshold_mask.shape[1]
+        min_x_span = self.min_x_span_ratio * frame_width
+
         valid_contours = []
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
 
-            if self.min_blob_area <= area <= self.max_blob_area:
-                valid_contours.append(cnt)
+            if not (self.min_blob_area <= area <= self.max_blob_area):
+                continue
+
+            # X-axis span check: a grabbed wire runs across the sensor.
+            x, y, w, h = cv2.boundingRect(cnt)
+
+            if w < min_x_span:
+                # Contact does not extend across the frame in X -> noise.
+                continue
+
+            valid_contours.append(cnt)
 
         if len(valid_contours) == 0:
             debug_bgr = self.make_debug_image(
@@ -380,6 +394,7 @@ class GelSightHolePatternNode(Node):
 
             cv2.circle(debug, (cx, cy), radius, (255, 0, 255), 2)
             cv2.circle(debug, (cx, cy), 3, (0, 0, 255), -1)
+        print(pose)
 
         # Draw PCA axis in red
         if pose is not None:
